@@ -24,13 +24,14 @@ class PerformanceReportGenerator:
             # Try DB instances first
             response = self.rds_client.describe_db_instances(DBInstanceIdentifier=db_identifier)
             if response['DBInstances']:
-                db_info = {
-                    'resource_id': response['DBInstances'][0]['DbiResourceId'],
-                    'engine': response['DBInstances'][0]['Engine'],
-                    'instance_class': response['DBInstances'][0]['DBInstanceClass'],
-                    'allocated_storage': response['DBInstances'][0]['AllocatedStorage']
+                db_instance = response['DBInstances'][0]
+                return {
+                    'resource_id': db_instance['DbiResourceId'],
+                    'engine': db_instance['Engine'],
+                    'engine_version': db_instance['EngineVersion'],
+                    'instance_class': db_instance['DBInstanceClass'],
+                    'allocated_storage': db_instance['AllocatedStorage']
                 }
-                return db_info
         except self.rds_client.exceptions.DBInstanceNotFoundFault:
             pass
             
@@ -38,17 +39,81 @@ class PerformanceReportGenerator:
             # Try DB clusters
             response = self.rds_client.describe_db_clusters(DBClusterIdentifier=db_identifier)
             if response['DBClusters']:
-                db_info = {
-                    'resource_id': response['DBClusters'][0]['DbClusterResourceId'],
-                    'engine': response['DBClusters'][0]['Engine'],
+                db_cluster = response['DBClusters'][0]
+                return {
+                    'resource_id': db_cluster['DbClusterResourceId'],
+                    'engine': db_cluster['Engine'],
+                    'engine_version': db_cluster['EngineVersion'],
                     'instance_class': 'cluster',
-                    'allocated_storage': response['DBClusters'][0].get('AllocatedStorage', 'N/A')
+                    'allocated_storage': db_cluster.get('AllocatedStorage', 'N/A')
                 }
-                return db_info
         except self.rds_client.exceptions.DBClusterNotFoundFault:
             pass
             
         raise ValueError(f"Database {db_identifier} not found")
+    
+    def get_engine_performance_metrics(self, engine, start_time, end_time, db_resource_id):
+        """Get engine-specific performance metrics"""
+        metrics = {}
+        
+        if 'mysql' in engine.lower():
+            # MySQL/Aurora MySQL metrics
+            metric_configs = {
+                'cpu': [
+                    {'Metric': 'db.CPU.total.pct'},
+                    {'Metric': 'db.CPU.Innodb.pct'}
+                ],
+                'memory': [
+                    {'Metric': 'db.Memory.total.pct'},
+                    {'Metric': 'db.Memory.Innodb.pct'}
+                ],
+                'io': [
+                    {'Metric': 'db.IO.total.pct'}
+                ]
+            }
+        elif 'postgres' in engine.lower():
+            # PostgreSQL/Aurora PostgreSQL metrics
+            metric_configs = {
+                'cpu': [
+                    {'Metric': 'db.load.avg'}
+                ],
+                'memory': [
+                    {'Metric': 'db.connections.avg'}
+                ],
+                'io': [
+                    {'Metric': 'db.SQL.postgresql.select.calls_per_sec.avg'}
+                ]
+            }
+        else:
+            # Generic metrics
+            metric_configs = {
+                'cpu': [
+                    {'Metric': 'db.load.avg'}
+                ],
+                'memory': [
+                    {'Metric': 'db.connections.avg'}
+                ],
+                'io': [
+                    {'Metric': 'db.load.avg'}
+                ]
+            }
+        
+        # Query each metric type
+        for metric_type, metric_queries in metric_configs.items():
+            try:
+                response = self.pi_client.get_resource_metrics(
+                    ServiceType='RDS',
+                    Identifier=db_resource_id,
+                    MetricQueries=metric_queries,
+                    StartTime=start_time,
+                    EndTime=end_time,
+                    PeriodInSeconds=300
+                )
+                metrics[metric_type] = response
+            except Exception as e:
+                metrics[metric_type] = {'error': str(e)}
+        
+        return metrics
     
     def get_performance_metrics(self, db_resource_id, start_time, end_time):
         """Get comprehensive performance metrics"""
@@ -105,32 +170,49 @@ class PerformanceReportGenerator:
         
         return metrics
     
-    def get_top_sql_summary(self, db_resource_id, start_time, end_time, limit=5):
+    def get_top_sql_summary(self, db_resource_id, engine, start_time, end_time, limit=5):
         """Get summary of top SQL statements"""
         try:
+            if 'mysql' in engine.lower():
+                metric = 'db.SQL.Innodb.avg_timer_wait.avg'
+                group_by = {'Group': 'db.sql_tokenized.id'}
+            elif 'postgres' in engine.lower():
+                metric = 'db.load.avg'
+                group_by = {'Group': 'db.sql.id'}
+            else:
+                metric = 'db.load.avg'
+                group_by = {'Group': 'db.sql.id'}
+            
             response = self.pi_client.describe_dimension_keys(
                 ServiceType='RDS',
                 Identifier=db_resource_id,
-                Metric='db.SQL.Innodb.avg_timer_wait.avg',
+                Metric=metric,
                 StartTime=start_time,
                 EndTime=end_time,
-                GroupBy='db.sql_tokenized.id',
+                GroupBy=group_by,
                 MaxResults=limit
             )
             return response
         except Exception as e:
             return {'error': str(e)}
     
-    def get_wait_events_summary(self, db_resource_id, start_time, end_time, limit=10):
+    def get_wait_events_summary(self, db_resource_id, engine, start_time, end_time, limit=10):
         """Get summary of top wait events"""
         try:
+            if 'mysql' in engine.lower():
+                metric = 'db.wait_event.name.avg_timer_wait.avg'
+            elif 'postgres' in engine.lower():
+                metric = 'db.load.avg'
+            else:
+                metric = 'db.load.avg'
+            
             response = self.pi_client.describe_dimension_keys(
                 ServiceType='RDS',
                 Identifier=db_resource_id,
-                Metric='db.wait_event.name.avg_timer_wait.avg',
+                Metric=metric,
                 StartTime=start_time,
                 EndTime=end_time,
-                GroupBy='db.wait_event.name',
+                GroupBy={'Group': 'db.wait_event.name'},
                 MaxResults=limit
             )
             return response
@@ -330,15 +412,29 @@ def main():
     print(f"Generating performance report for {db_info['resource_id']}")
     print(f"Time range: {start_time} to {end_time}")
     
-    # Collect performance data
-    print("Collecting performance metrics...")
-    metrics = generator.get_performance_metrics(db_info['resource_id'], start_time, end_time)
+        # Replace old get_performance_metrics call
+        metrics = generator.get_engine_performance_metrics(
+            engine=db_info.get('engine', 'unknown'),
+            start_time=start_time, 
+            end_time=end_time,
+            db_resource_id=db_info['resource_id']
+        )
     
     print("Collecting top SQL statements...")
-    top_sql = generator.get_top_sql_summary(db_info['resource_id'], start_time, end_time)
+    top_sql = generator.get_top_sql_summary(
+        db_info['resource_id'], 
+        db_info.get('engine', 'unknown'),
+        start_time, 
+        end_time
+    )
     
     print("Collecting wait events...")
-    wait_events = generator.get_wait_events_summary(db_info['resource_id'], start_time, end_time)
+    wait_events = generator.get_wait_events_summary(
+        db_info['resource_id'],
+        db_info.get('engine', 'unknown'), 
+        start_time, 
+        end_time
+    )
     
     # Generate report
     print("Generating report...")

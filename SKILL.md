@@ -1,37 +1,43 @@
 ---
 name: aws-performance-insights
-description: AWS Performance Insights database monitoring and analysis. Query RDS/Aurora Performance Insights metrics, analyze database performance, identify top SQL statements, wait events, and resource bottlenecks. Use when analyzing database performance issues, slow queries, monitoring database metrics, or investigating RDS/Aurora Performance Insights data.
+description: AWS Performance Insights database monitoring and analysis with multi-engine support. Query RDS/Aurora Performance Insights metrics for both MySQL and PostgreSQL, analyze database performance, identify top SQL statements (MySQL), wait events (MySQL), and resource bottlenecks. Automatically detects database engine and uses appropriate metrics. Use when analyzing database performance issues, slow queries, monitoring database metrics, or investigating RDS/Aurora Performance Insights data for MySQL or PostgreSQL engines.
 ---
 
 # AWS Performance Insights Skill
 
-Comprehensive AWS Performance Insights monitoring and analysis for RDS and Aurora databases.
+Comprehensive AWS Performance Insights monitoring and analysis for RDS and Aurora databases with multi-engine support.
 
 ## Capabilities
 
-### 1. Performance Metrics Query
-- CPU, Memory, and I/O utilization metrics
-- Database load and throughput analysis
-- Historical performance data retrieval
-- Real-time performance monitoring
+### 1. Multi-Engine Performance Metrics
+- **MySQL/Aurora MySQL**: CPU, Memory, I/O utilization metrics
+- **PostgreSQL/Aurora PostgreSQL**: Database load and query activity metrics
+- **Auto-Detection**: Automatically detects database engine and uses appropriate metrics
+- Historical performance data retrieval and real-time monitoring
 
-### 2. Top SQL Analysis
+### 2. Top SQL Analysis (MySQL/Aurora MySQL)
 - Identify top resource-consuming SQL statements
 - Query execution statistics and patterns
 - SQL digest and normalization analysis
 - Performance comparison across time ranges
 
-### 3. Wait Events Investigation
+### 3. Wait Events Investigation (MySQL/Aurora MySQL)
 - Database wait event analysis
 - Lock contention identification
 - I/O bottleneck detection
 - Resource contention monitoring
 
-### 4. Resource Utilization Reports
-- Database connection analysis
-- Buffer cache efficiency metrics
-- Disk I/O patterns and statistics
-- Memory usage optimization insights
+### 4. PostgreSQL-Specific Monitoring
+- Database load analysis (`db.load.avg`)
+- PostgreSQL query activity metrics (SELECT, INSERT, UPDATE, DELETE)
+- Connection pattern analysis
+- Query calls per second tracking
+
+### 5. Resource Utilization Reports
+- Engine-specific performance metrics
+- Multi-database comparative analysis
+- Automated report generation
+- Performance trend identification
 
 ## Usage
 

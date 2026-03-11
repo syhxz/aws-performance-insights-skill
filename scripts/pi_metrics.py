@@ -24,7 +24,12 @@ class PIMetricsQuery:
             # Try DB instances first
             response = self.rds_client.describe_db_instances(DBInstanceIdentifier=db_identifier)
             if response['DBInstances']:
-                return response['DBInstances'][0]['DbiResourceId']
+                db_instance = response['DBInstances'][0]
+                return {
+                    'resource_id': db_instance['DbiResourceId'],
+                    'engine': db_instance['Engine'],
+                    'engine_version': db_instance['EngineVersion']
+                }
         except self.rds_client.exceptions.DBInstanceNotFoundFault:
             pass
             
@@ -32,11 +37,93 @@ class PIMetricsQuery:
             # Try DB clusters
             response = self.rds_client.describe_db_clusters(DBClusterIdentifier=db_identifier)
             if response['DBClusters']:
-                return response['DBClusters'][0]['DbClusterResourceId']
+                db_cluster = response['DBClusters'][0]
+                return {
+                    'resource_id': db_cluster['DbClusterResourceId'],
+                    'engine': db_cluster['Engine'],
+                    'engine_version': db_cluster['EngineVersion']
+                }
         except self.rds_client.exceptions.DBClusterNotFoundFault:
             pass
             
         raise ValueError(f"Database {db_identifier} not found")
+    
+    def get_engine_specific_metrics(self, engine, metric_type):
+        """Get engine-specific metrics based on database engine"""
+        if 'mysql' in engine.lower():
+            return self._get_mysql_metrics(metric_type)
+        elif 'postgres' in engine.lower():
+            return self._get_postgresql_metrics(metric_type)
+        else:
+            # Default to generic metrics
+            return self._get_generic_metrics(metric_type)
+    
+    def _get_mysql_metrics(self, metric_type):
+        """Get MySQL/Aurora MySQL specific metrics"""
+        if metric_type == 'cpu':
+            return [
+                {'Metric': 'db.CPU.total.pct'},
+                {'Metric': 'db.CPU.Innodb.pct'}
+            ]
+        elif metric_type == 'memory':
+            return [
+                {'Metric': 'db.Memory.total.pct'},
+                {'Metric': 'db.Memory.Innodb.pct'}
+            ]
+        elif metric_type == 'io':
+            return [
+                {'Metric': 'db.IO.total.pct'},
+                {'Metric': 'db.IO.read.pct'},
+                {'Metric': 'db.IO.write.pct'}
+            ]
+        elif metric_type == 'connections':
+            return [
+                {'Metric': 'db.Connections.Avg'},
+                {'Metric': 'db.Connections.Max'}
+            ]
+        elif metric_type == 'throughput':
+            return [
+                {'Metric': 'db.Transactions.Avg'},
+                {'Metric': 'db.Queries.Avg'}
+            ]
+        else:
+            return [{'Metric': 'db.load.avg'}]
+    
+    def _get_postgresql_metrics(self, metric_type):
+        """Get PostgreSQL/Aurora PostgreSQL specific metrics"""
+        if metric_type == 'cpu':
+            return [
+                {'Metric': 'db.load.avg'}
+            ]
+        elif metric_type == 'memory':
+            return [
+                {'Metric': 'db.connections.avg'}
+            ]
+        elif metric_type == 'io':
+            return [
+                {'Metric': 'db.SQL.postgresql.select.calls_per_sec.avg'},
+                {'Metric': 'db.SQL.postgresql.insert.calls_per_sec.avg'}
+            ]
+        elif metric_type == 'connections':
+            return [
+                {'Metric': 'db.connections.avg'}
+            ]
+        elif metric_type == 'throughput':
+            return [
+                {'Metric': 'db.SQL.postgresql.update.calls_per_sec.avg'},
+                {'Metric': 'db.SQL.postgresql.delete.calls_per_sec.avg'}
+            ]
+        else:
+            return [{'Metric': 'db.load.avg'}]
+    
+    def _get_generic_metrics(self, metric_type):
+        """Get generic metrics that work across engines"""
+        if metric_type == 'cpu':
+            return [{'Metric': 'db.load.avg'}]
+        elif metric_type == 'connections':
+            return [{'Metric': 'db.connections.avg'}]
+        else:
+            return [{'Metric': 'db.load.avg'}]
     
     def query_metrics(self, db_resource_id, metric_queries, start_time, end_time, period=300):
         """Query Performance Insights metrics"""
@@ -98,55 +185,35 @@ def main():
     
     # Handle DB identifier vs resource ID
     db_resource_id = args.db_resource_id
+    db_info = None
+    
     if not db_resource_id.startswith('db-'):
         try:
-            db_resource_id = pi_query.get_db_resource_id(args.db_resource_id)
+            db_info = pi_query.get_db_resource_id(args.db_resource_id)
+            db_resource_id = db_info['resource_id']
             print(f"Resolved DB identifier '{args.db_resource_id}' to resource ID: {db_resource_id}")
+            print(f"Database Engine: {db_info['engine']} {db_info['engine_version']}")
         except Exception as e:
             print(f"Error resolving DB identifier: {e}")
             sys.exit(1)
+    else:
+        # Try to get engine info for resource ID
+        try:
+            # This is a bit more complex for resource IDs, we'll use generic metrics
+            db_info = {'resource_id': db_resource_id, 'engine': 'unknown', 'engine_version': 'unknown'}
+        except Exception:
+            db_info = {'resource_id': db_resource_id, 'engine': 'unknown', 'engine_version': 'unknown'}
     
     # Define time range
     end_time = datetime.utcnow()
     start_time = end_time - timedelta(hours=args.hours)
     
-    # Define metric queries based on type
-    metric_queries = []
-    
-    if args.metric_type == 'cpu':
-        metric_queries = [
-            {
-                'Metric': 'db.CPU.Innodb.pct',
-                'GroupBy': {'Group': 'db.SQL_ID.Innodb.select.avg_timer_wait.avg'}
-            },
-            {
-                'Metric': 'db.CPU.total.pct'
-            }
-        ]
-    elif args.metric_type == 'memory':
-        metric_queries = [
-            {
-                'Metric': 'db.Memory.total.pct'
-            }
-        ]
-    elif args.metric_type == 'io':
-        metric_queries = [
-            {
-                'Metric': 'db.IO.total.pct'
-            }
-        ]
-    elif args.metric_type == 'connections':
-        metric_queries = [
-            {
-                'Metric': 'db.Connections.Avg'
-            }
-        ]
-    elif args.metric_type == 'throughput':
-        metric_queries = [
-            {
-                'Metric': 'db.Transactions.Avg'
-            }
-        ]
+    # Define metric queries based on engine and type
+    if db_info and db_info['engine'] != 'unknown':
+        metric_queries = pi_query.get_engine_specific_metrics(db_info['engine'], args.metric_type)
+    else:
+        # Fallback to generic metrics
+        metric_queries = pi_query._get_generic_metrics(args.metric_type)
     
     print(f"Querying {args.metric_type} metrics for {db_resource_id}")
     print(f"Time range: {start_time} to {end_time}")

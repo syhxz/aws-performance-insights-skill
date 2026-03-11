@@ -24,7 +24,12 @@ class WaitEventsAnalyzer:
             # Try DB instances first
             response = self.rds_client.describe_db_instances(DBInstanceIdentifier=db_identifier)
             if response['DBInstances']:
-                return response['DBInstances'][0]['DbiResourceId']
+                db_instance = response['DBInstances'][0]
+                return {
+                    'resource_id': db_instance['DbiResourceId'],
+                    'engine': db_instance['Engine'],
+                    'engine_version': db_instance['EngineVersion']
+                }
         except self.rds_client.exceptions.DBInstanceNotFoundFault:
             pass
             
@@ -32,23 +37,50 @@ class WaitEventsAnalyzer:
             # Try DB clusters
             response = self.rds_client.describe_db_clusters(DBClusterIdentifier=db_identifier)
             if response['DBClusters']:
-                return response['DBClusters'][0]['DbClusterResourceId']
+                db_cluster = response['DBClusters'][0]
+                return {
+                    'resource_id': db_cluster['DbClusterResourceId'],
+                    'engine': db_cluster['Engine'],
+                    'engine_version': db_cluster['EngineVersion']
+                }
         except self.rds_client.exceptions.DBClusterNotFoundFault:
             pass
             
         raise ValueError(f"Database {db_identifier} not found")
     
-    def get_wait_events(self, db_resource_id, start_time, end_time, limit=20):
+    def get_engine_wait_metrics(self, engine):
+        """Get engine-specific wait event metrics"""
+        if 'mysql' in engine.lower():
+            return {
+                'metric': 'db.wait_event.name.avg_timer_wait.avg',
+                'group_by': {'Group': 'db.wait_event.name'}
+            }
+        elif 'postgres' in engine.lower():
+            return {
+                'metric': 'db.load.avg',
+                'group_by': {'Group': 'db.wait_event.name'}
+            }
+        else:
+            # Generic fallback
+            return {
+                'metric': 'db.load.avg',
+                'group_by': {'Group': 'db.wait_event.name'}
+            }
+    
+    def get_wait_events(self, db_resource_id, engine, start_time, end_time, limit=20):
         """Get top wait events by resource consumption"""
         try:
+            # Get engine-specific wait event metrics
+            wait_config = self.get_engine_wait_metrics(engine)
+            
             # Query dimension keys for wait events
             response = self.pi_client.describe_dimension_keys(
                 ServiceType='RDS',
                 Identifier=db_resource_id,
-                Metric='db.wait_event.name.avg_timer_wait.avg',
+                Metric=wait_config['metric'],
                 StartTime=start_time,
                 EndTime=end_time,
-                GroupBy='db.wait_event.name',
+                GroupBy=wait_config['group_by'],
                 MaxResults=limit
             )
             return response
@@ -166,13 +198,22 @@ def main():
     
     # Handle DB identifier vs resource ID
     db_resource_id = args.db_resource_id
+    db_info = None
+    engine = 'unknown'
+    
     if not db_resource_id.startswith('db-'):
         try:
-            db_resource_id = analyzer.get_db_resource_id(args.db_resource_id)
+            db_info = analyzer.get_db_resource_id(args.db_resource_id)
+            db_resource_id = db_info['resource_id']
+            engine = db_info['engine']
             print(f"Resolved DB identifier '{args.db_resource_id}' to resource ID: {db_resource_id}")
+            print(f"Database Engine: {engine} {db_info['engine_version']}")
         except Exception as e:
             print(f"Error resolving DB identifier: {e}")
             sys.exit(1)
+    else:
+        print(f"Using resource ID: {db_resource_id}")
+        print("Warning: Engine type unknown, using generic wait event analysis")
     
     # Define time range
     if args.start_time and args.end_time:
@@ -184,11 +225,11 @@ def main():
     
     print(f"Analyzing top {args.limit} wait events for {db_resource_id}")
     print(f"Time range: {start_time} to {end_time}")
-    print(f"Metric: {args.metric}")
     
     # Get wait events
     response = analyzer.get_wait_events(
         db_resource_id=db_resource_id,
+        engine=engine,
         start_time=start_time,
         end_time=end_time,
         limit=args.limit

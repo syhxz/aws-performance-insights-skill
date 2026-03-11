@@ -24,7 +24,12 @@ class TopSQLAnalyzer:
             # Try DB instances first
             response = self.rds_client.describe_db_instances(DBInstanceIdentifier=db_identifier)
             if response['DBInstances']:
-                return response['DBInstances'][0]['DbiResourceId']
+                db_instance = response['DBInstances'][0]
+                return {
+                    'resource_id': db_instance['DbiResourceId'],
+                    'engine': db_instance['Engine'],
+                    'engine_version': db_instance['EngineVersion']
+                }
         except self.rds_client.exceptions.DBInstanceNotFoundFault:
             pass
             
@@ -32,23 +37,51 @@ class TopSQLAnalyzer:
             # Try DB clusters
             response = self.rds_client.describe_db_clusters(DBClusterIdentifier=db_identifier)
             if response['DBClusters']:
-                return response['DBClusters'][0]['DbClusterResourceId']
+                db_cluster = response['DBClusters'][0]
+                return {
+                    'resource_id': db_cluster['DbClusterResourceId'],
+                    'engine': db_cluster['Engine'],
+                    'engine_version': db_cluster['EngineVersion']
+                }
         except self.rds_client.exceptions.DBClusterNotFoundFault:
             pass
             
         raise ValueError(f"Database {db_identifier} not found")
     
-    def get_top_sql_statements(self, db_resource_id, start_time, end_time, limit=10):
+    def get_engine_sql_metrics(self, engine):
+        """Get engine-specific SQL metrics for top SQL analysis"""
+        if 'mysql' in engine.lower():
+            return {
+                'metric': 'db.SQL.Innodb.avg_timer_wait.avg',
+                'group_by': {'Group': 'db.sql_tokenized.id'}
+            }
+        elif 'postgres' in engine.lower():
+            # For PostgreSQL, use load metrics grouped by wait events as SQL info is limited
+            return {
+                'metric': 'db.load.avg', 
+                'group_by': {'Group': 'db.wait_event.name'}
+            }
+        else:
+            # Generic fallback
+            return {
+                'metric': 'db.load.avg',
+                'group_by': {'Group': 'db.wait_event.name'}
+            }
+    
+    def get_top_sql_statements(self, db_resource_id, engine, start_time, end_time, limit=10):
         """Get top SQL statements by resource consumption"""
         try:
+            # Get engine-specific SQL metrics
+            sql_config = self.get_engine_sql_metrics(engine)
+            
             # Query dimension keys for SQL statements
             response = self.pi_client.describe_dimension_keys(
                 ServiceType='RDS',
                 Identifier=db_resource_id,
-                Metric='db.SQL.Innodb.avg_timer_wait.avg',
+                Metric=sql_config['metric'],
                 StartTime=start_time,
                 EndTime=end_time,
-                GroupBy='db.sql_tokenized.id',
+                GroupBy=sql_config['group_by'],
                 MaxResults=limit
             )
             return response
@@ -121,13 +154,22 @@ def main():
     
     # Handle DB identifier vs resource ID
     db_resource_id = args.db_resource_id
+    db_info = None
+    engine = 'unknown'
+    
     if not db_resource_id.startswith('db-'):
         try:
-            db_resource_id = analyzer.get_db_resource_id(args.db_resource_id)
+            db_info = analyzer.get_db_resource_id(args.db_resource_id)
+            db_resource_id = db_info['resource_id']
+            engine = db_info['engine']
             print(f"Resolved DB identifier '{args.db_resource_id}' to resource ID: {db_resource_id}")
+            print(f"Database Engine: {engine} {db_info['engine_version']}")
         except Exception as e:
             print(f"Error resolving DB identifier: {e}")
             sys.exit(1)
+    else:
+        print(f"Using resource ID: {db_resource_id}")
+        print("Warning: Engine type unknown, using generic SQL analysis")
     
     # Define time range
     end_time = datetime.utcnow()
@@ -135,11 +177,11 @@ def main():
     
     print(f"Analyzing top {args.limit} SQL statements for {db_resource_id}")
     print(f"Time range: {start_time} to {end_time}")
-    print(f"Metric: {args.metric}")
     
     # Get top SQL statements
     response = analyzer.get_top_sql_statements(
         db_resource_id=db_resource_id,
+        engine=engine,
         start_time=start_time,
         end_time=end_time,
         limit=args.limit
