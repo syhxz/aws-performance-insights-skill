@@ -43,22 +43,37 @@ Comprehensive AWS Performance Insights monitoring and analysis for RDS and Auror
 
 ### Query Performance Metrics
 ```bash
-python scripts/pi_metrics.py --db-resource-id <db-resource-id> --metric-type cpu --hours 24
+python3 scripts/pi_metrics.py --db-resource-id <db-resource-id> --metric-type load --hours 24
 ```
 
-### Analyze Top SQL Statements
+### Analyze Top SQL Statements (🔧 FIXED)
 ```bash
-python scripts/top_sql.py --db-resource-id <db-resource-id> --limit 10 --period 3600
+# Get Top SQL with load percentages
+python3 scripts/top_sql.py --db-resource-id <db-resource-id> --hours 2 --limit 10
+
+# JSON output for programmatic use
+python3 scripts/top_sql.py --db-resource-id <db-resource-id> --hours 1 --output-format json
 ```
 
-### Investigate Wait Events
+### Generate Performance Report (🔧 FIXED)
 ```bash
-python scripts/wait_events.py --db-resource-id <db-resource-id> --start-time "2024-01-01T00:00:00Z"
+# Text report
+python3 scripts/performance_report.py --db-resource-id <db-resource-id> --hours 4 --output-format text
+
+# JSON report
+python3 scripts/performance_report.py --db-resource-id <db-resource-id> --output-format json
 ```
 
-### Generate Performance Report
+### Query Specific Metrics
 ```bash
-python scripts/performance_report.py --db-resource-id <db-resource-id> --output-format json
+# Database load metrics
+python3 scripts/pi_metrics.py --db-resource-id <db-resource-id> --metric-type load --hours 1
+
+# CPU metrics
+python3 scripts/pi_metrics.py --db-resource-id <db-resource-id> --metric-type cpu --hours 2
+
+# Memory metrics  
+python3 scripts/pi_metrics.py --db-resource-id <db-resource-id> --metric-type memory --hours 1
 ```
 
 ## Configuration
